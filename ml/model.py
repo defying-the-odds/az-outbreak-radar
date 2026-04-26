@@ -1,13 +1,53 @@
 # ml/model.py
 
+def get_age_multiplier(age_range: str) -> float:
+    """
+    Age risk multipliers based on CDC published data.
+    https://www.cdc.gov/coronavirus/2019-ncov/need-extra-precautions/people-with-medical-conditions.html
+    """
+    age_multipliers = {
+        "0-17":  1.1,
+        "18-34": 1.0,
+        "35-54": 1.1,
+        "55-64": 1.3,
+        "65+":   1.5
+    }
+    return age_multipliers.get(age_range, 1.0)
+
+
 def weighted_risk_score(features: dict) -> float:
     score = (
-        features["fever"] * 0.4 +
-        features["cough"] * 0.3 +
-        features["travel"] * 0.2 +
-        features["animal_exposure"] * 0.1 +
-        features["mosquito_index"] * 0.2
+        # Original symptoms
+        features.get("fever", 0) * 0.4 +
+        features.get("cough", 0) * 0.2 +
+        features.get("travel", 0) * 0.2 +
+        features.get("animal_exposure", 0) * 0.1 +
+        features.get("mosquito_index", 0.0) * 0.1 +
+
+        # New symptoms
+        features.get("shortness_of_breath", 0) * 0.3 +
+        features.get("fatigue", 0) * 0.15 +
+        features.get("vomiting_diarrhea", 0) * 0.15 +
+        features.get("rash", 0) * 0.1 +
+        features.get("body_aches", 0) * 0.1 +
+        features.get("mosquito_bite", 0) * 0.1 +
+
+        # Pre existing conditions
+        features.get("diabetes", 0) * 0.15 +
+        features.get("asthma", 0) * 0.1 +
+        features.get("immunocompromised", 0) * 0.2 +
+
+        # Travel destination risk from CDC advisories
+        features.get("travel_risk", 0.0)
     )
+
+    # Apply age multiplier from CDC data
+    age_range = features.get("age_range", None)
+    if age_range:
+        multiplier = get_age_multiplier(age_range)
+        score = score * multiplier
+
+    # Clamp between 0 and 1
     return round(min(1.0, max(0.0, score)), 2)
 
 
