@@ -34,105 +34,75 @@ CORS(app)  # allows Lovable frontend to call this API
 
 # ---- HELPERS ----
 
+# CDC high risk travel destinations
+HIGH_RISK_DESTINATIONS = [
+    "mexico",
+    "india",
+    "china",
+    "brazil",
+    "indonesia",
+    "nigeria",
+    "ethiopia",
+    "congo",
+    "pakistan",
+    "bangladesh",
+]
+
 
 def lovable_to_ml(form_data: dict) -> dict:
     """
-    Translates Lovable frontend form data into Person 1's expected input format.
-
-    Lovable sends:
-    {
-        "fever": true/false,
-        "cough": true/false,
-        "shortness_of_breath": true/false,
-        "fatigue": true/false,
-        "vomiting_diarrhea": true/false,
-        "rash": true/false,
-        "body_aches": true/false,
-        "recent_travel": true/false,
-        "travel_destination": "Mexico" or null,
-        "animal_exposure": true/false,
-        "mosquito_bites": true/false,
-        "zip_code": "85719",
-        "age_range": "18-24",
-        "pre_existing": ["none"]
-    }
-
-    Person 1 expects:
-    {
-        "fever": 0/1,
-        "cough": 0/1,
-        "travel": 0/1,
-        "animal_exposure": 0/1,
-        "mosquito_index": float (0.0 to 1.0)
-    }
+    Translates Lovable frontend form data into Person 1's updated ML format.
+    Person 1 (Aswin) now handles ALL symptoms, pre-existing conditions,
+    age multipliers, and has a trained logistic regression model.
     """
+    pre_existing = form_data.get("pre_existing", [])
+    destination = form_data.get("travel_destination", "")
+
     return {
+        # symptoms
         "fever": int(bool(form_data.get("fever", False))),
         "cough": int(bool(form_data.get("cough", False))),
+        "shortness_of_breath": int(bool(form_data.get("shortness_of_breath", False))),
+        "fatigue": int(bool(form_data.get("fatigue", False))),
+        "vomiting_diarrhea": int(bool(form_data.get("vomiting_diarrhea", False))),
+        "rash": int(bool(form_data.get("rash", False))),
+        "body_aches": int(bool(form_data.get("body_aches", False))),
+        # context
         "travel": int(bool(form_data.get("recent_travel", False))),
         "animal_exposure": int(bool(form_data.get("animal_exposure", False))),
-        # convert mosquito_bites boolean to a float index
-        # if they got bitten, treat as 0.7 risk; otherwise 0.1
         "mosquito_index": 0.7 if form_data.get("mosquito_bites", False) else 0.1,
+        "mosquito_bite": int(bool(form_data.get("mosquito_bites", False))),
+        # pre-existing conditions
+        "diabetes": int("diabetes" in [p.lower() for p in pre_existing]),
+        "asthma": int("asthma" in [p.lower() for p in pre_existing]),
+        "immunocompromised": int(
+            "immunocompromised" in [p.lower() for p in pre_existing]
+        ),
+        # age and location
+        "age_range": form_data.get("age_range", None),
+        "location": form_data.get("zip_code", "unknown"),
+        # travel risk from CDC advisories
+        "travel_risk": (
+            0.2
+            if destination and destination.lower() in HIGH_RISK_DESTINATIONS
+            else (0.1 if destination else 0.0)
+        ),
     }
 
 
-def enrich_ml_result(ml_result: dict, form_data: dict) -> dict:
+def format_for_lovable(ml_result: dict, form_data: dict) -> dict:
     """
-    Takes Person 1's ML output and adds extra info from
-    form fields that Person 1 doesn't handle (zip_code, age, etc.)
-
-    This makes the output richer for the Lovable frontend.
+    Formats Person 1's ML output for the Lovable frontend.
+    No extra scoring — Aswin's engine + ML model handles everything now.
     """
     result = dict(ml_result)
 
-    # add extra drivers based on fields Person 1 doesn't process
-    extra_drivers = []
+    # convert 0-1 score to 0-100 for the gauge display
+    result["score_display"] = round(result["score"] * 100)
 
-    if form_data.get("shortness_of_breath"):
-        extra_drivers.append("shortness of breath")
-        result["score"] = min(1.0, result["score"] + 0.1)
-
-    if form_data.get("vomiting_diarrhea"):
-        extra_drivers.append("vomiting/diarrhea")
-        result["score"] = min(1.0, result["score"] + 0.08)
-
-    if form_data.get("rash"):
-        extra_drivers.append("rash")
-        result["score"] = min(1.0, result["score"] + 0.05)
-
-    if form_data.get("fatigue"):
-        extra_drivers.append("fatigue")
-        result["score"] = min(1.0, result["score"] + 0.03)
-
-    if form_data.get("body_aches"):
-        extra_drivers.append("body aches")
-        result["score"] = min(1.0, result["score"] + 0.03)
-
-    if "immunocompromised" in form_data.get("pre_existing", []):
-        extra_drivers.append("immunocompromised status")
-        result["score"] = min(1.0, result["score"] + 0.1)
-
-    if extra_drivers:
-        result["drivers"] = result.get("drivers", []) + extra_drivers
-
-    # recalculate category after adjustments
-    score = result["score"]
-    if score >= 0.65:
-        result["category"] = "High"
-    elif score >= 0.35:
-        result["category"] = "Moderate"
-    else:
-        result["category"] = "Low"
-
-    # convert score to 0-100 scale for the Lovable gauge display
-    result["score_display"] = round(score * 100)
-
-    # add travel destination if provided
+    # pass through travel destination and zip code
     if form_data.get("travel_destination"):
         result["travel_destination"] = form_data["travel_destination"]
-
-    # add zip code for reference
     if form_data.get("zip_code"):
         result["zip_code"] = form_data["zip_code"]
 
@@ -159,16 +129,16 @@ def assess_risk():
     if not form_data:
         return jsonify({"error": "No data provided"}), 400
 
-    # translate lovable format → person 1's format
+    # translate lovable booleans → person 1's 0/1 format
     ml_input = lovable_to_ml(form_data)
 
-    # run person 1's risk engine
+    # run Aswin's risk engine (ML model + rule-based fallback)
     ml_result = get_risk_score(ml_input)
 
-    # enrich with extra symptoms person 1 doesn't handle
-    enriched = enrich_ml_result(ml_result, form_data)
+    # format for lovable frontend display
+    formatted = format_for_lovable(ml_result, form_data)
 
-    return jsonify(enriched)
+    return jsonify(formatted)
 
 
 @app.route("/api/community", methods=["GET"])
